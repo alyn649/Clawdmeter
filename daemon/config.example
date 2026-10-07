@@ -42,3 +42,8 @@ chime = off
 #   12   = show the clock, forced 12-hour  (e.g. 6:28 PM)
 #   24   = show the clock, forced 24-hour  (e.g. 18:28)
 clock = off
+# Show your weekly Fable limit as a third row on the Usage screen.
+# Read from Claude Code's usage endpoint — one extra request per poll.
+#   off = two rows, Current + Weekly; the endpoint is never called (default)
+#   on  = three rows: Current, Weekly and Fable (when your plan has a Fable limit)
+fable = off

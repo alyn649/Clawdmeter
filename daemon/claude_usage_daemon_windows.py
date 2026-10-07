@@ -43,6 +43,7 @@ RECONNECT_BACKOFF_CAP = 8  # D-05: fast-reconnect cap (seconds); keeps stacked r
 
 # Optional reset chime.
 # Optional clock display. 
+# Optional weekly Fable row.
 # Config lives under the same Clawdmeter dir as daemon.log.
 CONFIG_FILE = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "Clawdmeter" / "config"
 
@@ -154,6 +155,29 @@ def read_clock_setting() -> str:
     return "off"
 
 
+def read_fable_setting() -> str:
+    """Read the `fable` option from the config file. One of: off|on.
+
+    Defaults to "off": the daemon never calls the usage endpoint and the
+    payload is unchanged, so existing setups are unaffected until the user
+    opts in.
+    """
+    try:
+        if CONFIG_FILE.exists():
+            for line in CONFIG_FILE.read_text().splitlines():
+                line = line.split("#", 1)[0].strip()
+                if "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                if key.strip().lower() == "fable":
+                    val = val.strip().lower()
+                    if val in ("off", "on"):
+                        return val
+    except OSError:
+        pass
+    return "off"
+
+
 def add_chime_field(payload: dict) -> None:
     """Add "c":1 to the payload when the config opts in, so the firmware may
     sound the session-reset chime. Omitted entirely when chime is off."""
@@ -183,12 +207,67 @@ def add_clock_fields(payload: dict) -> None:
     payload["tf"] = tf
 
 
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+MODEL_LIMIT_NAME = "Fable"   # which model-scoped weekly limit to show
+
+
+async def poll_model_limit(http: httpx.AsyncClient, headers: dict) -> dict:
+    """Weekly model-scoped limit (e.g. Fable) from Claude Code's usage endpoint.
+
+    The rate-limit headers only carry the combined 5h/7d windows; per-model
+    weekly limits come from ``/api/oauth/usage`` as rows of its ``limits``
+    array: ``{kind: "weekly_scoped", percent (0-100), resets_at (ISO 8601),
+    scope: {model: {display_name}}}`` — the same rows Claude Code's usage view
+    renders as "Current week (Fable)". Returns payload fields ``f`` / ``fr`` /
+    ``fn``, or ``{}`` when unavailable — the firmware then keeps its
+    two-panel layout. Only called when the ``fable`` config option is on.
+    """
+    try:
+        resp = await http.get(USAGE_URL, headers=headers)
+        if resp.status_code != 200:
+            log(f"Usage endpoint HTTP {resp.status_code}")
+            return {}
+        body = resp.json()
+    except (httpx.HTTPError, ValueError) as e:
+        log(f"Usage endpoint failed: {e}")
+        return {}
+    rows = body.get("limits") if isinstance(body, dict) else None
+    entry = None
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or row.get("kind") != "weekly_scoped":
+            continue
+        model = ((row.get("scope") or {}).get("model") or {})
+        if str(model.get("display_name", "")).startswith(MODEL_LIMIT_NAME):
+            entry = row
+            break
+    if entry is None or entry.get("percent") is None:
+        if not getattr(poll_model_limit, "_logged", False):
+            poll_model_limit._logged = True   # once per daemon run, not every poll
+            kinds = [r.get("kind") for r in rows if isinstance(r, dict)] if isinstance(rows, list) else rows
+            log(f"No {MODEL_LIMIT_NAME} weekly limit in usage response (limits kinds={kinds})")
+        return {}
+    name = entry["scope"]["model"]["display_name"]
+    fields = {"f": int(round(float(entry["percent"]))), "fr": -1, "fn": str(name)[:12]}
+    resets_at = entry.get("resets_at")
+    if resets_at:
+        try:
+            ts = datetime.datetime.fromisoformat(str(resets_at).replace("Z", "+00:00")).timestamp()
+            fields["fr"] = max(0, int(round((ts - time.time()) / 60.0)))
+        except ValueError:
+            pass
+    return fields
+
+
 async def poll_api(token: str) -> dict | None:
     headers = dict(API_HEADERS_TEMPLATE)
     headers["Authorization"] = f"Bearer {token}"
     try:
         async with httpx.AsyncClient(timeout=20.0) as http:
             resp = await http.post(API_URL, headers=headers, json=API_BODY)
+            model_limit = {}
+            if (read_fable_setting() == "on" and resp.status_code < 400
+                    and resp.headers.get("anthropic-ratelimit-unified-5h-utilization")):
+                model_limit = await poll_model_limit(http, headers)
     except httpx.HTTPError as e:
         # Network/DNS/timeout — transient. Return None (no toast), retry next tick.
         log(f"API call failed: {e}")
@@ -230,6 +309,7 @@ async def poll_api(token: str) -> dict | None:
             "wr": reset_minutes(hdr("anthropic-ratelimit-unified-7d-reset")),
             "st": hdr("anthropic-ratelimit-unified-5h-status", "unknown"),
             "acct": "pro",
+            **model_limit,
             "ok": True,
         }
     else:

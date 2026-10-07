@@ -234,6 +234,8 @@ JSON payload format (written to RX):
 
 Fields: `s` = session %, `sr` = session reset (minutes), `w` = weekly %, `wr` = weekly reset (minutes), `st` = status, `ok` = success flag.
 
+Optional model-scoped weekly limit (Pro/Max, opt-in with `fable = on` in the daemon config — all three installers offer it, default off): `f` = that limit's %, `fr` = its reset (minutes), `fn` = its display name (e.g. `"Fable"`). The daemon reads it from the `weekly_scoped` rows of Claude Code's `/api/oauth/usage` endpoint. When present, the usage screen switches to three compact rows (Current / Weekly / Fable); when absent (the default) it keeps the two-panel layout.
+
 ## Development
 
 <img src="assets/readme/crab.gif" width="120" align="right" alt="">

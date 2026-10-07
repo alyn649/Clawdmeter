@@ -104,7 +104,42 @@ if ($LASTEXITCODE -ne 0) { throw "Autostart registration failed (exit $LASTEXITC
 Log "Autostart registered - Clawdmeter will launch automatically at next logon"
 
 # ------------------------------------------------------------------
-# Step 4: Launch the tray app (headless - BASE pythonw.exe, no console window)
+# Step 4: Optional weekly Fable row (daemon config, off by default)
+# ------------------------------------------------------------------
+# Same `fable = on|off` key the macOS/Linux installers offer. The daemon
+# re-reads %LOCALAPPDATA%\Clawdmeter\config on every poll; with the key unset
+# or off it never calls the usage endpoint. Only asked in an interactive
+# session, and other keys in the file are preserved.
+$ConfigDir  = Join-Path $env:LOCALAPPDATA "Clawdmeter"
+$ConfigFile = Join-Path $ConfigDir "config"
+if ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
+    $ans = Read-Host "Show your weekly Fable limit as a third row on the Usage screen? [y/N]"
+    $current = $null
+    $kept = @()
+    if (Test-Path $ConfigFile) {
+        $all  = @(Get-Content -Path $ConfigFile -Encoding UTF8)
+        $kept = @($all | Where-Object { $_ -notmatch '^\s*fable\s*=' })
+        $last = $all | Where-Object { $_ -match '^\s*fable\s*=' } | Select-Object -Last 1
+        if ($last -and ($last -match '^\s*fable\s*=\s*(\w+)')) { $current = $Matches[1].ToLower() }
+    }
+    $value = $null
+    if ($ans -match '^[Yy]$') { $value = "on" }
+    elseif ($current -eq "on") { $value = "off" }
+    if ($value) {
+        New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+        # UTF-8 without a BOM: a BOM would glue itself to the first key name.
+        [System.IO.File]::WriteAllLines($ConfigFile, [string[]]($kept + "fable = $value"),
+            (New-Object System.Text.UTF8Encoding $false))
+        Log "Set: fable = $value ($ConfigFile)"
+    } else {
+        Log "Fable row off (default)"
+    }
+} else {
+    Log "Non-interactive - skipping the Fable prompt (add 'fable = on' to $ConfigFile to enable)"
+}
+
+# ------------------------------------------------------------------
+# Step 5: Launch the tray app (headless - BASE pythonw.exe, no console window)
 # ------------------------------------------------------------------
 # Use the BASE interpreter's pythonw.exe, NOT the venv's Scripts\pythonw.exe.
 # The venv pythonw is a redirector stub that re-launches the CONSOLE python.exe

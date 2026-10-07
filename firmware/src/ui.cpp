@@ -46,6 +46,11 @@ struct Layout {
     const lv_font_t* reset_font;     // "Resets in ..." line
     const lv_font_t* pace_font;      // enterprise "Under/On/Over pace" line
     const lv_font_t* anim_font;      // animated status line
+    // Dense three-panel mode (session + weekly + model-scoped limit, e.g. Fable):
+    // pct, reset text and pill share one row with the bar beneath.
+    const lv_font_t* dense_pct_font;
+    const lv_font_t* dense_text_font;  // pill + reset line
+    int16_t dense_pad_y;
     int16_t anim_y;                  // status line offset from bottom
     bool    small_icons;             // 40px logo + 24px battery (vs 80/48) on small screens
     int16_t title_nudge;             // title x-shift balancing the corner logo
@@ -93,6 +98,9 @@ static void compute_layout(const BoardCaps& c) {
     L.pace_font    = &font_styrene_16;
     L.anim_font    = &font_mono_32;
     L.anim_y = -15;
+    L.dense_pct_font  = &font_styrene_28;
+    L.dense_text_font = &font_styrene_20;
+    L.dense_pad_y = 8;
     L.small_icons = false;
     L.title_nudge = 16;
     L.logo_y = L.title_y - 10;
@@ -126,6 +134,7 @@ static void compute_layout(const BoardCaps& c) {
         L.usage_reset_y = 78;
         L.bt_info_panel_h = 140;
         L.bt_reset_zone_h = 90;
+        L.dense_text_font  = &font_styrene_16;
         L.bt_title_font    = &font_tiempos_34;
         L.bt_status_font   = &font_styrene_28;
         L.bt_device_font   = &font_styrene_20;
@@ -154,6 +163,9 @@ static void compute_layout(const BoardCaps& c) {
         L.reset_font   = &font_styrene_14;
         L.pace_font    = &font_styrene_12;
         L.anim_font    = &font_mono_18;
+        L.dense_pct_font  = &font_styrene_20;
+        L.dense_text_font = &font_styrene_14;
+        L.dense_pad_y = 5;
         // Center the status line in the strip below the weekly panel; flush
         // against the bottom edge it reads as unevenly spaced.
         L.anim_y = -10;
@@ -211,6 +223,13 @@ static lv_obj_t* lbl_weekly_label;
 static lv_obj_t* lbl_weekly_reset;
 static lv_obj_t* panel_session = nullptr;
 static lv_obj_t* panel_weekly = nullptr;
+// Third panel: model-scoped weekly limit (e.g. Fable), only when the daemon sends one
+static lv_obj_t* panel_model = nullptr;
+static lv_obj_t* bar_model;
+static lv_obj_t* lbl_model_pct;
+static lv_obj_t* lbl_model_label;
+static lv_obj_t* lbl_model_reset;
+static bool      dense_mode = false;
 // Enterprise-only widgets inside panel_session
 static lv_obj_t* lbl_session_pct_sym = nullptr;  // "%" in smaller font
 static lv_obj_t* lbl_spending_desc = nullptr;     // "of your monthly budget"
@@ -529,6 +548,11 @@ static void init_usage_screen(lv_obj_t* scr) {
     // Recolor enabled so enterprise period box can color pace and reset separately
     lv_label_set_recolor(lbl_weekly_reset, true);
 
+    panel_model = make_usage_panel(usage_group, 0, "",
+                     &lbl_model_pct, &lbl_model_label,
+                     &bar_model, &lbl_model_reset);
+    lv_obj_add_flag(panel_model, LV_OBJ_FLAG_HIDDEN);
+
     build_pair_group(usage_container);
     build_idle_group(usage_container);
 
@@ -538,6 +562,69 @@ static void init_usage_screen(lv_obj_t* scr) {
     lv_obj_set_style_text_font(lbl_anim, L.anim_font, 0);
     lv_obj_set_style_text_color(lbl_anim, COL_ACCENT, 0);
     lv_obj_align(lbl_anim, LV_ALIGN_BOTTOM_MID, 0, L.anim_y);
+}
+
+// Lay one usage panel out at row `idx` in either the normal two-panel layout or
+// the dense three-panel one. Fonts for the pct label are re-applied by
+// ui_update() (enterprise swaps them), so only the dense override lives here.
+static void layout_usage_panel(lv_obj_t* panel, lv_obj_t* pct, lv_obj_t* pill,
+                               lv_obj_t* bar, lv_obj_t* reset, int idx, bool dense) {
+    const int inner_w = L.content_w - 2 * L.panel_pad_x;
+    if (!dense) {
+        lv_obj_set_pos(panel, L.margin, L.content_y + idx * (L.usage_panel_h + L.usage_panel_gap));
+        lv_obj_set_height(panel, L.usage_panel_h);
+        lv_obj_set_style_pad_top(panel, L.panel_pad_y, 0);
+        lv_obj_set_style_pad_bottom(panel, L.panel_pad_y, 0);
+        lv_obj_set_style_text_font(pct, L.pct_font, 0);
+        lv_obj_set_style_text_font(pill, L.pill_font, 0);
+        lv_obj_align(pill, LV_ALIGN_TOP_RIGHT, 0, 1);
+        lv_obj_set_pos(bar, 0, L.usage_bar_y);
+        lv_obj_set_size(bar, inner_w, L.bar_h);
+        lv_obj_set_style_text_font(reset, L.reset_font, 0);
+        lv_obj_align(reset, LV_ALIGN_TOP_LEFT, 0, L.usage_reset_y);
+        return;
+    }
+    // Fit three panels between content_y and the top of the status line.
+    const int anim_top = L.scr_h + L.anim_y - lv_font_get_line_height(L.anim_font) - 4;
+    int h = (anim_top - L.content_y - 2 * L.usage_panel_gap) / 3;
+    if (h > L.usage_panel_h) h = L.usage_panel_h;
+    const int inner_h  = h - 2 * L.dense_pad_y;
+    const int pct_lh   = lv_font_get_line_height(L.dense_pct_font);
+    const int text_lh  = lv_font_get_line_height(L.dense_text_font);
+    const int pill_h   = text_lh + 2 * L.pill_pad_y;
+
+    lv_obj_set_pos(panel, L.margin, L.content_y + idx * (h + L.usage_panel_gap));
+    lv_obj_set_height(panel, h);
+    lv_obj_set_style_pad_top(panel, L.dense_pad_y, 0);
+    lv_obj_set_style_pad_bottom(panel, L.dense_pad_y, 0);
+    lv_obj_set_style_text_font(pct, L.dense_pct_font, 0);
+    lv_obj_set_style_text_font(pill, L.dense_text_font, 0);
+    lv_obj_align(pill, LV_ALIGN_TOP_RIGHT, 0, (pct_lh - pill_h) / 2);
+    lv_obj_set_pos(bar, 0, inner_h - L.bar_h);
+    lv_obj_set_size(bar, inner_w, L.bar_h);
+    lv_obj_set_style_text_font(reset, L.dense_text_font, 0);
+}
+
+// In dense mode the reset text sits just left of the pill on the pct row; it
+// has to be re-anchored whenever either label's text changes width.
+static void place_dense_reset(lv_obj_t* panel, lv_obj_t* pill, lv_obj_t* reset) {
+    lv_obj_update_layout(panel);
+    const int pct_lh  = lv_font_get_line_height(L.dense_pct_font);
+    const int text_lh = lv_font_get_line_height(L.dense_text_font);
+    lv_obj_align(reset, LV_ALIGN_TOP_RIGHT, -(lv_obj_get_width(pill) + 8), (pct_lh - text_lh) / 2);
+}
+
+static void set_dense_mode(bool dense) {
+    if (dense == dense_mode) return;
+    dense_mode = dense;
+    layout_usage_panel(panel_session, lbl_session_pct, lbl_session_label,
+                       bar_session, lbl_session_reset, 0, dense);
+    layout_usage_panel(panel_weekly, lbl_weekly_pct, lbl_weekly_label,
+                       bar_weekly, lbl_weekly_reset, 1, dense);
+    layout_usage_panel(panel_model, lbl_model_pct, lbl_model_label,
+                       bar_model, lbl_model_reset, 2, dense);
+    if (dense) lv_obj_clear_flag(panel_model, LV_OBJ_FLAG_HIDDEN);
+    else       lv_obj_add_flag(panel_model, LV_OBJ_FLAG_HIDDEN);
 }
 
 // ======== Public API ========
@@ -609,6 +696,9 @@ void ui_update(const UsageData* data) {
 
     int s_pct = (int)(data->session_pct + 0.5f);
 
+    const bool dense = !data->enterprise && data->model_pct >= 0.0f;
+    set_dense_mode(dense);
+
     if (data->enterprise) {
         // Spending box: big number-only label + small "%" symbol + desc + pace
         lv_obj_set_style_text_font(lbl_session_pct, L.ent_pct_font, 0);
@@ -619,7 +709,7 @@ void ui_update(const UsageData* data) {
         lv_obj_add_flag(lbl_spending_status,   LV_OBJ_FLAG_HIDDEN);
         if (panel_weekly) lv_obj_clear_flag(panel_weekly, LV_OBJ_FLAG_HIDDEN);
     } else {
-        lv_obj_set_style_text_font(lbl_session_pct, L.pct_font, 0);
+        lv_obj_set_style_text_font(lbl_session_pct, dense ? L.dense_pct_font : L.pct_font, 0);
         lv_label_set_text(lbl_session_label, "Current");
         lv_obj_clear_flag(lbl_session_reset, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_session_pct_sym, LV_OBJ_FLAG_HIDDEN);
@@ -672,6 +762,20 @@ void ui_update(const UsageData* data) {
         lv_obj_set_style_bg_color(bar_weekly, pct_color(data->weekly_pct), LV_PART_INDICATOR);
         format_reset_time(data->weekly_reset_mins, buf, sizeof(buf));
         lv_label_set_text(lbl_weekly_reset, buf);
+    }
+
+    if (dense) {
+        int m_pct = (int)(data->model_pct + 0.5f);
+        lv_label_set_text(lbl_model_label, data->model_name[0] ? data->model_name : "Model");
+        lv_label_set_text_fmt(lbl_model_pct, "%d%%", m_pct);
+        lv_bar_set_value(bar_model, m_pct, LV_ANIM_ON);
+        lv_obj_set_style_bg_color(bar_model, pct_color(data->model_pct), LV_PART_INDICATOR);
+        format_reset_time(data->model_reset_mins, buf, sizeof(buf));
+        lv_label_set_text(lbl_model_reset, buf);
+
+        place_dense_reset(panel_session, lbl_session_label, lbl_session_reset);
+        place_dense_reset(panel_weekly,  lbl_weekly_label,  lbl_weekly_reset);
+        place_dense_reset(panel_model,   lbl_model_label,   lbl_model_reset);
     }
 }
 

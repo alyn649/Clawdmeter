@@ -126,14 +126,15 @@ read_heartbeat_interval() {
     fi
 }
 
-# Age a payload by $2 seconds: "sr"/"wr" reset countdowns (minutes) tick down
-# toward 0 and the optional clock epoch "t" advances. Everything else (usage %,
-# status, chime permission flag) is left as fetched. Echoes the adjusted JSON.
+# Age a payload by $2 seconds: "sr"/"wr"/"fr" reset countdowns (minutes) tick
+# down toward 0 and the optional clock epoch "t" advances. Everything else
+# (usage %, status, chime permission flag) is left as fetched. Echoes the
+# adjusted JSON.
 age_payload() {
     python3 - "$1" "$2" <<'PYEOF'
 import json, sys
 d = json.loads(sys.argv[1]); secs = int(sys.argv[2]); mins = secs // 60
-for k in ("sr", "wr"):
+for k in ("sr", "wr", "fr"):
     if isinstance(d.get(k), int) and d[k] > 0:
         d[k] = max(d[k] - mins, 0)
 if isinstance(d.get("t"), int) and d["t"] > 0:
@@ -170,6 +171,69 @@ read_chime_setting() {
         on) echo "on" ;;
         *)  echo "off" ;;
     esac
+}
+
+# Read the `fable` option from the config file. Echoes one of: off|on.
+# Defaults to "off": the usage endpoint is never called and the payload is
+# unchanged, so existing setups are unaffected until the user opts in.
+read_fable_setting() {
+    local val=""
+    if [ -f "$CONFIG_FILE" ]; then
+        val=$(grep -E '^[[:space:]]*fable[[:space:]]*=' "$CONFIG_FILE" | tail -1 \
+            | tr -d '\r' \
+            | sed -E 's/^[[:space:]]*fable[[:space:]]*=[[:space:]]*//; s/[[:space:]]*(#.*)?$//' \
+            | tr '[:upper:]' '[:lower:]')
+    fi
+    case "$val" in
+        on) echo "on" ;;
+        *)  echo "off" ;;
+    esac
+}
+
+# Turn a /api/oauth/usage response body (stdin) into the payload fragment for
+# the weekly Fable limit: ',"f":<pct>,"fr":<reset mins>,"fn":"<name>"'. Fable
+# is a `limits` row with kind "weekly_scoped" and scope.model.display_name
+# "Fable…". Echoes nothing when there's no such row or the body is unreadable.
+# $1 = now (epoch seconds).
+parse_fable_usage() {
+    python3 -c '
+import json, sys
+from datetime import datetime
+now = float(sys.argv[1])
+try:
+    body = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+rows = body.get("limits") if isinstance(body, dict) else None
+for r in rows if isinstance(rows, list) else []:
+    if not isinstance(r, dict) or r.get("kind") != "weekly_scoped" or r.get("percent") is None:
+        continue
+    name = str(((r.get("scope") or {}).get("model") or {}).get("display_name", ""))
+    if not name.startswith("Fable"):
+        continue
+    fr = -1
+    try:
+        ts = datetime.fromisoformat(str(r["resets_at"]).replace("Z", "+00:00")).timestamp()
+        fr = max(0, int(round((ts - now) / 60)))
+    except (KeyError, TypeError, ValueError):
+        pass
+    sys.stdout.write(",\"f\":%d,\"fr\":%d,\"fn\":%s" % (round(float(r["percent"])), fr, json.dumps(name[:12])))
+    break
+' "$1" 2>/dev/null
+}
+
+# Fetch the weekly Fable limit for one OAuth token and echo its payload
+# fragment (see parse_fable_usage), or nothing on any failure. Per-model weekly
+# limits aren't in the rate-limit headers, only in Claude Code's usage endpoint.
+fable_fragment_for_token() {
+    local token="$1" now="$2"
+    # Same -K - stdin trick as the messages call: keep the token out of argv.
+    printf 'header = "Authorization: Bearer %s"\n' "$token" | curl -s -f -m 20 -K - \
+        "https://api.anthropic.com/api/oauth/usage" \
+        -H "anthropic-version: 2023-06-01" \
+        -H "anthropic-beta: oauth-2025-04-20" \
+        -H "User-Agent: claude-code/2.1.5" \
+        2>/dev/null | parse_fable_usage "$now"
 }
 
 # Read the `clock` option from the config file. Echoes one of: off|auto|12|24.
@@ -426,13 +490,16 @@ build_payload_for_token() {
         s5h_util=${s5h_util:-0}; s5h_reset=${s5h_reset:-0}
         s7d_util=${s7d_util:-0}; s7d_reset=${s7d_reset:-0}
         s5h_status=${s5h_status:-unknown}
-        payload=$(awk -v u5="$s5h_util" -v r5="$s5h_reset" -v u7="$s7d_util" -v r7="$s7d_reset" -v st="$s5h_status" -v now="$now" -v clk="$clock_fragment" -v chm="$chime_fragment" \
+        # Optional weekly Fable limit (opt-in; off by default = no extra request).
+        local fable_fragment=""
+        [ "$(read_fable_setting)" = "on" ] && fable_fragment=$(fable_fragment_for_token "$token" "$now")
+        payload=$(awk -v u5="$s5h_util" -v r5="$s5h_reset" -v u7="$s7d_util" -v r7="$s7d_reset" -v st="$s5h_status" -v now="$now" -v clk="$clock_fragment" -v chm="$chime_fragment" -v fab="$fable_fragment" \
             'BEGIN {
                 sp = sprintf("%.0f", u5 * 100);
                 sr = (r5 - now) / 60; sr = sr > 0 ? sprintf("%.0f", sr) : 0;
                 wp = sprintf("%.0f", u7 * 100);
                 wr = (r7 - now) / 60; wr = wr > 0 ? sprintf("%.0f", wr) : 0;
-                printf "{\"s\":%s,\"sr\":%s,\"w\":%s,\"wr\":%s,\"st\":\"%s\",\"acct\":\"pro\"%s%s,\"ok\":true}", sp, sr, wp, wr, st, clk, chm;
+                printf "{\"s\":%s,\"sr\":%s,\"w\":%s,\"wr\":%s,\"st\":\"%s\",\"acct\":\"pro\"%s%s%s,\"ok\":true}", sp, sr, wp, wr, st, clk, chm, fab;
             }')
     else
         # Enterprise account — spending-limit model

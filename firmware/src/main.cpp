@@ -110,6 +110,9 @@ static bool parse_json(const char* json, UsageData* out) {
     out->session_reset_mins = doc["sr"] | -1;
     out->weekly_pct = doc["w"] | 0.0f;
     out->weekly_reset_mins = doc["wr"] | -1;
+    out->model_pct = doc["f"] | -1.0f;   // absent (no model-scoped limit) → two-panel layout
+    out->model_reset_mins = doc["fr"] | -1;
+    strlcpy(out->model_name, doc["fn"] | "", sizeof(out->model_name));
     strlcpy(out->status, doc["st"] | "unknown", sizeof(out->status));
     out->chime = doc["c"] | false;   // absent (old daemon / chime off) → stay silent
     const char* acct = doc["acct"] | "pro";
