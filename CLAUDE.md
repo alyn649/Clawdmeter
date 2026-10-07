@@ -6,7 +6,7 @@ selected via PlatformIO's `build_src_filter`. Adding a board means dropping in
 a new folder + a new `[env:...]` block — `main.cpp`, `ui.cpp`, and `splash.cpp`
 never see board-specific code. See [`docs/porting/adding-a-board.md`](docs/porting/adding-a-board.md).
 
-Seven ports today (two SoC families, five panel sizes):
+Eight ports today (three SoC families, six panel sizes):
 
 - `boards/waveshare_amoled_216/` — original Waveshare ESP32-S3-Touch-AMOLED-2.16 (CO5300, 480×480 square, CST9220 touch, IMU rotation). Build env: `waveshare_amoled_216`.
 - `boards/waveshare_amoled_18/` — Waveshare ESP32-S3-Touch-AMOLED-1.8 (368×448 portrait, XCA9554 IO expander). Build env: `waveshare_amoled_18`. **Two panel revisions are auto-detected at boot** (`board_rev()` in `board_init.cpp`, enum in `board_rev.h`): original = SH8601 display + FT3168 touch (0x38); later = CO5300 display + CST816 touch (0x15). One binary drives both.
@@ -15,6 +15,7 @@ Seven ports today (two SoC families, five panel sizes):
 - `boards/waveshare_amoled_206/` — Waveshare ESP32-S3-Touch-AMOLED-2.06 (CO5300, 410×502 watch form factor, FT3168 touch, no IO expander, 32 MB flash, PCF85063 RTC, ES8311 codec). Build env: `waveshare_amoled_206`. Display, touch, battery, IMU init, and BLE verified on hardware; the ES8311 chime path is not wired up (`sound.cpp` no-ops).
 - `boards/waveshare_lcd_154/` — Waveshare ESP32-S3-Touch-LCD-1.54 (ST7789, 240×240 square, CST816T touch @ 0x15). Build env: `waveshare_lcd_154`. **The first non-AMOLED port**: a plain 4-wire SPI TFT, not QSPI, and the panel has no brightness command — backlight is LEDC PWM on `LCD_BL`. **No PMU**: battery is an ADC divider on GPIO1 and `BAT_EN` (GPIO2) is a power-hold line that must be driven HIGH early in `board_init()` or the board browns out on battery. Three buttons (BOOT + GPIO5 + a PWR-role GPIO4); ES8311 chime wired up; QMI8658 populated but unused (fixed orientation, no rotation).
 - `boards/waveshare_lcd_4/` — Waveshare ESP32-S3-Touch-LCD-4 (ST7701 RGB parallel, 480×480 square, GT911 touch). Build env: `waveshare_lcd_4`. **RGB-panel port**: Arduino_ESP32RGBPanel + bounce buffers (tearing fix). IO expander @ 0x24 (TCA9554 / CH32V003) must init before `gfx->begin()` or the panel stays dark; backlight is expander pin 2 (on/off only). No AXP2101 / IMU; KEY/PWR is hardware RST. Single BOOT button (GPIO 0 → Space/PTT).
+- `boards/lcdwiki_28_esp32e/` — LCDWiki 2.8" ESP32-32E display (E32R28T, "Cheap Yellow Display" style; ILI9341 SPI TFT run landscape 320×240, XPT2046 resistive touch). Build env: `lcdwiki_28_esp32e`. **First classic-ESP32 port**: ESP32-D0WD-V3, 4 MB flash (`huge_app.csv`), **no PSRAM** (same fallbacks as the C6 ports), CH340 UART USB — on macOS use `/dev/cu.wchusbserial*`, the Apple-driver `usbserial-*` twin reports busy. Touch is on its **own GPIOs** (CLK 25 / MOSI 32 / MISO 39 / CS 33 / IRQ 36), not the LCD bus, read by a bit-banged reader; calibration in `board.h`. Only user button is BOOT (GPIO 0), which takes the **PWR role** (animations/brightness, hold-to-pair) — no HID buttons. Selects `THEME_TFT_BRIGHT` plus a mild software gamma LUT in `display.cpp`, since the AMOLED palette reads murky on the TN panel. Display, touch, BOOT and BLE verified on hardware.
 
 Plus one non-hardware target: `boards/sim/` — **native desktop simulator** (SDL2 window, 480×480, `platform = native`). Build env: `sim`. See "Desktop simulator" below.
 
@@ -91,6 +92,7 @@ firmware/src/
     waveshare_amoled_206/   — CO5300 + FT3168 + AXP PKEY, no IO expander, 32 MB, no rotation
     waveshare_lcd_154/      — ST7789 SPI TFT + CST816T + ADC battery (no PMU), PWM backlight
     waveshare_lcd_4/         — ST7701 RGB parallel + GT911 + expander backlight, no PMU/IMU
+    lcdwiki_28_esp32e/      — classic ESP32: ILI9341 SPI TFT + bit-banged XPT2046, no PSRAM, BOOT as PWR
     sim/                    — native desktop simulator: SDL2 + Arduino shims + scenario playback
     template/               — copy this to bootstrap a new port
   main.cpp                  — setup() + loop(): HAL calls only, zero #ifdef BOARD_*
@@ -121,6 +123,7 @@ pio run -d firmware -e waveshare_amoled_18_c6                                   
 pio run -d firmware -e waveshare_amoled_206                                     # build 2.06 (S3, watch)
 pio run -d firmware -e waveshare_lcd_154                                        # build 1.54 (S3, SPI TFT)
 pio run -d firmware -e waveshare_lcd_4                                           # build LCD-4 (S3, RGB TFT)
+pio run -d firmware -e lcdwiki_28_esp32e                                        # build LCDWiki 2.8 (classic ESP32, SPI TFT)
 pio run -d firmware -e waveshare_amoled_18 -t upload --upload-port /dev/cu.usbmodem101   # flash 1.8 on macOS
 pio run -d firmware -e waveshare_amoled_216 -t upload --upload-port /dev/ttyACM0         # flash 2.16 on Linux
 # C6 boards: same native USB-JTAG flashing; flag a chip mismatch ("This chip is ESP32-C6,

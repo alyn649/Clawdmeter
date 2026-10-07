@@ -34,6 +34,7 @@ Boards supported out of the box:
 - [Waveshare ESP32-S3-Touch-AMOLED-2.06](https://www.waveshare.com/esp32-s3-touch-amoled-2.06.htm?&aff_id=149786)
 - [Waveshare ESP32-S3-Touch-LCD-1.54](https://www.waveshare.com/esp32-s3-lcd-1.54.htm?sku=33869&aff_id=149786)
 - [Waveshare ESP32-S3-Touch-LCD-4](https://www.waveshare.com/esp32-s3-touch-lcd-4.htm)
+- LCDWiki 2.8" ESP32-32E display (E32R28T) — the "Cheap Yellow Display"-style board with a classic ESP32, ILI9341 TFT and resistive touch (env `lcdwiki_28_esp32e`)
 
 > Please check if a pull request exists for your alternative hardware port before opening a new one, providing QA feedback and testing on the same hardware is more valuable than duplicate pull requests.
 
@@ -58,6 +59,7 @@ The macOS host pieces — Python daemon, LaunchAgent, and flash helper — were 
 ./flash-mac.sh waveshare_amoled_216                       # ESP32-S3 2.16" (auto-detects /dev/cu.usbmodem*)
 ./flash-mac.sh waveshare_amoled_216_c6                    # ESP32-C6 2.16" variant
 ./flash-mac.sh waveshare_amoled_18  /dev/cu.usbmodem1101  # ESP32-S3 1.8" (or pass an explicit USB serial port)
+./flash-mac.sh lcdwiki_28_esp32e /dev/cu.wchusbserial1430 # LCDWiki 2.8" CH340 board — always pass the port
 ```
 
 The board env name is required. Run `./flash-mac.sh` with no args to see the available envs (scraped from `firmware/platformio.ini`).
